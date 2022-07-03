@@ -14,7 +14,7 @@
 |aliyun.securityGroup.id|阿里云安全组ID|
 |aliyun.securityGroup.protocol|入站规则协议(TCP\| UDP\| ALL)|
 |aliyun.securityGroup.priority|入站规则权重(1-50)|
-|aliyun.securityGroup.portRange|入站规则端口范围(1-65535 \| 8080:8090)|
+|aliyun.securityGroup.portRange|入站规则端口范围(1-65535 \| 8080/8090)|
 
 ## Aliyun DNS解析域名
 |参数名|描述|
