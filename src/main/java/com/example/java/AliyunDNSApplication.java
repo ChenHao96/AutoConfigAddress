@@ -6,10 +6,6 @@ import com.aliyuncs.alidns.model.v20150109.AddDomainRecordRequest;
 import com.aliyuncs.alidns.model.v20150109.DeleteDomainRecordRequest;
 import com.aliyuncs.alidns.model.v20150109.DescribeDomainRecordsRequest;
 import com.aliyuncs.alidns.model.v20150109.DescribeDomainRecordsResponse;
-import com.aliyuncs.ecs.model.v20140526.AuthorizeSecurityGroupRequest;
-import com.aliyuncs.ecs.model.v20140526.DescribeSecurityGroupAttributeRequest;
-import com.aliyuncs.ecs.model.v20140526.DescribeSecurityGroupAttributeResponse;
-import com.aliyuncs.ecs.model.v20140526.RevokeSecurityGroupRequest;
 import com.aliyuncs.exceptions.ClientException;
 import com.aliyuncs.exceptions.ServerException;
 import com.aliyuncs.profile.DefaultProfile;
@@ -17,16 +13,19 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Properties;
+import java.util.Set;
 
-public class AliyunSDKApplication {
+public class AliyunDNSApplication {
 
     private final Properties properties;
 
-    public AliyunSDKApplication() throws IOException {
+    public AliyunDNSApplication() throws IOException {
 
         this.properties = new Properties();
-        InputStream inputStream = AliyunSDKApplication.class
+        InputStream inputStream = AliyunDNSApplication.class
                 .getResourceAsStream("/application.properties");
         if (inputStream != null) {
             this.properties.load(inputStream);
@@ -35,8 +34,6 @@ public class AliyunSDKApplication {
 
         final String[] keys = new String[]{
                 "aliyun.regionId", "aliyun.access.keyId", "aliyun.access.secret",
-                "aliyun.securityGroup.protocol", "aliyun.securityGroup.priority",
-                "aliyun.securityGroup.portRange", "aliyun.securityGroup.id",
                 "aliyun.domain.name", "aliyun.domain.name.sub"
         };
         for (String key : keys) {
@@ -48,7 +45,7 @@ public class AliyunSDKApplication {
         }
     }
 
-    public AliyunSDKApplication(Properties properties) {
+    public AliyunDNSApplication(Properties properties) {
         this.properties = new Properties();
         properties.forEach(properties::put);
     }
@@ -117,72 +114,6 @@ public class AliyunSDKApplication {
                 }
                 client.getAcsResponse(request);
             }
-        } catch (ServerException e) {
-            e.printStackTrace();
-        } catch (ClientException e) {
-            System.out.println("ErrCode: " + e.getErrCode());
-            System.out.println("ErrMsg: " + e.getErrMsg());
-            System.out.println("RequestId: " + e.getRequestId());
-        }
-    }
-
-    public void updateSecurityGroup(String ipv4) {
-
-        String securityGroupId = properties.getProperty("aliyun.securityGroup.id");
-        if (StringUtils.isBlank(securityGroupId)) {
-            throw new IllegalArgumentException("aliyun.securityGroup.id is blank!");
-        }
-        String securityGroupPriority = properties.getProperty("aliyun.securityGroup.priority");
-        if (StringUtils.isBlank(securityGroupPriority)) {
-            throw new IllegalArgumentException("aliyun.securityGroup.priority is blank!");
-        }
-        String securityGroupProtocol = properties.getProperty("aliyun.securityGroup.protocol");
-        if (StringUtils.isBlank(securityGroupProtocol)) {
-            throw new IllegalArgumentException("aliyun.securityGroup.protocol is blank!");
-        }
-        String securityGroupPortRange = properties.getProperty("aliyun.securityGroup.portRange");
-        if (StringUtils.isBlank(securityGroupPortRange)) {
-            throw new IllegalArgumentException("aliyun.securityGroup.portRange is blank!");
-        }
-
-        final String policy = "Accept", description = "SDK程序添加";
-        DescribeSecurityGroupAttributeRequest request = new DescribeSecurityGroupAttributeRequest();
-        request.setSecurityGroupId(securityGroupId);
-        request.setDirection("ingress");
-        request.setNicType("intranet");
-
-        IAcsClient client = createIAcsClient();
-        try {
-            DescribeSecurityGroupAttributeResponse response = client.getAcsResponse(request);
-            List<DescribeSecurityGroupAttributeResponse.Permission> permissionsList = response.getPermissions();
-            if (permissionsList != null) {
-                for (DescribeSecurityGroupAttributeResponse.Permission permission : permissionsList) {
-                    boolean result = policy.equals(permission.getPolicy());
-                    result = result && description.equals(permission.getDescription());
-                    result = result && securityGroupPriority.equals(permission.getPriority());
-                    result = result && securityGroupProtocol.equals(permission.getIpProtocol());
-                    result = result && securityGroupPortRange.equals(permission.getPortRange());
-                    if (result) {
-                        RevokeSecurityGroupRequest revokeRequest = new RevokeSecurityGroupRequest();
-                        revokeRequest.setSourceCidrIp(permission.getSourceCidrIp());
-                        revokeRequest.setSecurityGroupId(securityGroupId);
-                        revokeRequest.setIpProtocol(securityGroupProtocol);
-                        revokeRequest.setPortRange(securityGroupPortRange);
-                        revokeRequest.setPriority(securityGroupPriority);
-                        client.getAcsResponse(revokeRequest);
-                    }
-                }
-            }
-
-            AuthorizeSecurityGroupRequest authorizeRequest = new AuthorizeSecurityGroupRequest();
-            authorizeRequest.setSecurityGroupId(securityGroupId);
-            authorizeRequest.setIpProtocol(securityGroupProtocol);
-            authorizeRequest.setPortRange(securityGroupPortRange);
-            authorizeRequest.setPriority(securityGroupPriority);
-            authorizeRequest.setDescription(description);
-            authorizeRequest.setSourceCidrIp(ipv4);
-            authorizeRequest.setPolicy(policy);
-            client.getAcsResponse(authorizeRequest);
         } catch (ServerException e) {
             e.printStackTrace();
         } catch (ClientException e) {
