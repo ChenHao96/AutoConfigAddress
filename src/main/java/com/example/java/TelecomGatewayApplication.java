@@ -16,6 +16,8 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.message.BasicNameValuePair;
 
 import java.io.*;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -23,31 +25,48 @@ import java.util.regex.Pattern;
 public class TelecomGatewayApplication {
 
     public static void main(String[] args) throws IOException {
+
+        List<String> localLanIPList = new ArrayList<>();
+        Enumeration<NetworkInterface> networkInterfaceEnumeration = NetworkInterface.getNetworkInterfaces();
+        while (networkInterfaceEnumeration.hasMoreElements()) {
+            NetworkInterface networkInterface = networkInterfaceEnumeration.nextElement();
+            if (networkInterface.isUp() && !networkInterface.isLoopback()) {
+                Enumeration<InetAddress> inetAddressEnumeration = networkInterface.getInetAddresses();
+                if (inetAddressEnumeration.hasMoreElements()) {
+                    InetAddress address = inetAddressEnumeration.nextElement();
+                    localLanIPList.add(address.getHostAddress());
+                }
+            }
+        }
+
         TelecomGatewayApplication telecomGatewayApplication = new TelecomGatewayApplication();
         System.out.println("------\t正在登录网关");
         telecomGatewayApplication.loginGateway();
         System.out.print("\u001B[33m------\t正在获取您的网关IP");
         System.out.println("\u001B[0m\u001B[31m(暂时仅支持天翼网关 >=3.0)\u001B[0m");
+
         System.out.println(new Gson().toJson(telecomGatewayApplication.getGatewayInfo()));
         PortMappingDisplay display = telecomGatewayApplication.getPortMappingDisplay();
         System.out.println(new Gson().toJson(display));
-        PortMappingSet portMappingSet = new PortMappingSet();
-        portMappingSet.setSrvname("test");
-        portMappingSet.setOp(null);
-        if (display.getPmRule() != null && display.getPmRule().size() > 0) {
-            for (PortMappingRule rule : display.getPmRule()) {
-                if (rule.getDesp().equals(portMappingSet.getSrvname())) {
-                    portMappingSet.setOp(PortMappingSetOption.del);
-                    break;
+
+        localLanIPList.removeIf(s -> !checkIpInRange(s, String.format("%s/%s", display.getLanIp(), display.getMask())));
+        if (localLanIPList.size() > 0) {
+            PortMappingSet portMappingSet = new PortMappingSet();
+            portMappingSet.setSrvname("test");
+            portMappingSet.setOp(PortMappingSetOption.add);
+            if (display.getPmRule() != null && display.getPmRule().size() > 0) {
+                for (PortMappingRule rule : display.getPmRule()) {
+                    if (rule.getDesp().equals(portMappingSet.getSrvname())) {
+                        portMappingSet.setOp(PortMappingSetOption.del);
+                        break;
+                    }
                 }
             }
-        } else {
-            portMappingSet.setOp(PortMappingSetOption.add);
-            portMappingSet.setClient("192.168.3.355");
-            portMappingSet.setExPort(8080);
-            portMappingSet.setInPort(8080);
-        }
-        if (portMappingSet.getOp() != null) {
+            if (PortMappingSetOption.add.equals(portMappingSet.getOp())) {
+                portMappingSet.setClient(localLanIPList.get(0));
+                portMappingSet.setExPort(8080);
+                portMappingSet.setInPort(8080);
+            }
             System.out.println(new Gson().toJson(telecomGatewayApplication.portMappingSetSingle(portMappingSet)));
         }
     }
@@ -60,7 +79,7 @@ public class TelecomGatewayApplication {
 
     private String loginToken;
 
-    private String lanIpPrefix;
+    private String cidr;
 
     private CloseableHttpClient httpclient;
 
@@ -184,21 +203,18 @@ public class TelecomGatewayApplication {
             JsonElement jsonElement = JsonParser.parseReader(reader);
             EntityUtils.consume(response.getEntity());
             JsonObject jsonObject = jsonElement.getAsJsonObject();
-            String lanIp = jsonObject.getAsJsonPrimitive("lanIp").getAsString();
-            this.lanIpPrefix = lanIp.substring(0, lanIp.lastIndexOf('.'));
-            String mask = jsonObject.getAsJsonPrimitive("mask").getAsString();
-            int count = jsonObject.getAsJsonPrimitive("count").getAsInt();
             PortMappingDisplay result = new PortMappingDisplay();
-            result.setLanIp(lanIp);
-            result.setCount(count);
-            result.setMask(mask);
-            if (count > 0) {
+            result.setLanIp(jsonObject.getAsJsonPrimitive("lanIp").getAsString());
+            result.setMask(jsonObject.getAsJsonPrimitive("mask").getAsString());
+            result.setCount(jsonObject.getAsJsonPrimitive("count").getAsInt());
+            this.cidr = String.format("%s/%s", result.getLanIp(), result.getMask());
+            if (result.getCount() > 0) {
                 if (result.getPmRule() == null) {
                     Gson gson = new Gson();
-                    result.setPmRule(new ArrayList<>(count));
-                    for (int i = 0; i < count; i++) {
+                    result.setPmRule(new ArrayList<>(result.getCount()));
+                    for (int i = 0; i < result.getCount(); i++) {
                         PortMappingRule rule = gson.fromJson(jsonObject.get(
-                                "pmRule" + (i + 1)), PortMappingRule.class);
+                                String.format("pmRule%d", i + 1)), PortMappingRule.class);
                         result.getPmRule().add(rule);
                         this.serviceNames.add(rule.getDesp());
                     }
@@ -218,7 +234,7 @@ public class TelecomGatewayApplication {
         if (StringUtils.isBlank(this.loginToken)) {
             throw new IllegalArgumentException("Gateway Login Fail!");
         }
-        if (StringUtils.isBlank(this.lanIpPrefix)) {
+        if (StringUtils.isBlank(this.cidr)) {
             throw new IllegalArgumentException("Must Be Request PortMappingDisplay First!");
         }
         if (StringUtils.isBlank(portMappingSet.getSrvname())) {
@@ -239,10 +255,10 @@ public class TelecomGatewayApplication {
             }
             if (StringUtils.isBlank(portMappingSet.getClient())) {
                 throw new IllegalArgumentException("Client Param Is Blank!");
-            } else if (!portMappingSet.getClient().startsWith(this.lanIpPrefix)) {
-                throw new IllegalArgumentException("The LAN IP is not the same network segment as the current LAN!");
-            } else if (!portMappingSet.getClient().matches("((1\\d{2}|2([0-4]\\d|5[0-5])|[1-9]\\d|[1-9])\\.){3}(1\\d{2}|2([0-4]\\d|5[0-5])|[1-9]\\d|[1-9])")) {
+            } else if (!portMappingSet.getClient().matches(ipRegex)) {
                 throw new IllegalArgumentException("Invalid LAN IP!");
+            } else if (!checkIpInRange(portMappingSet.getClient(), this.cidr)) {
+                throw new IllegalArgumentException("The LAN IP is not the same network segment as the current LAN!");
             }
             if (portMappingSet.getExPort() < 0 || portMappingSet.getExPort() > 65535) {
                 throw new IllegalArgumentException("Invalid External Port Value!");
@@ -255,8 +271,8 @@ public class TelecomGatewayApplication {
             }
 
             nameValuePairs.add(new BasicNameValuePair("client", portMappingSet.getClient()));
-            nameValuePairs.add(new BasicNameValuePair("exPort", portMappingSet.getExPort() + ""));
-            nameValuePairs.add(new BasicNameValuePair("inPort", portMappingSet.getInPort() + ""));
+            nameValuePairs.add(new BasicNameValuePair("exPort", portMappingSet.getExPort().toString()));
+            nameValuePairs.add(new BasicNameValuePair("inPort", portMappingSet.getInPort().toString()));
             nameValuePairs.add(new BasicNameValuePair("protocol", portMappingSet.getProtocol().name()));
         }
 
@@ -269,11 +285,44 @@ public class TelecomGatewayApplication {
             EntityUtils.consume(httpResponse.getEntity());
             response.setSrvname(portMappingSet.getSrvname());
             response.setOp(portMappingSet.getOp());
+            response.setProtocol(null);
             if (PortMappingSetOption.del.equals(response.getOp())) {
                 this.serviceNames.remove(response.getSrvname());
+            } else if (PortMappingSetOption.add.equals(response.getOp())) {
+                response.setOp(portMappingSet.getOp());
+                response.setClient(portMappingSet.getClient());
+                response.setInPort(portMappingSet.getInPort());
+                response.setExPort(portMappingSet.getExPort());
+                response.setSrvname(portMappingSet.getSrvname());
+                response.setProtocol(portMappingSet.getProtocol());
             }
             return response;
         }
+    }
+
+    private static final String ipRegex = "((1\\d{2}|2([0-4]\\d|5[0-5])|[1-9]\\d|\\d)\\.){3}(1\\d{2}|2([0-4]\\d|5[0-5])|[1-9]\\d|\\d)";
+
+    private static int parseToInt(String ip) {
+        String[] ips = ip.split("\\.");
+        return (Integer.parseInt(ips[0]) << 24) | (Integer.parseInt(ips[1]) << 16)
+                | (Integer.parseInt(ips[2]) << 8) | (Integer.parseInt(ips[3]));
+    }
+
+    private static boolean checkIpInRange(String ip, String cidr) {
+
+        String[] lanMask = cidr.split("/");
+        String lan = lanMask[0], maskStr = lanMask[1];
+
+        int mask;
+        if (maskStr.matches(ipRegex)) {
+            mask = parseToInt(maskStr);
+        } else {
+            mask = 0xFFFFFFFF << (32 - Integer.parseInt(maskStr));
+        }
+
+        int ipAddr = parseToInt(ip);
+        int netAddr = parseToInt(lan);
+        return (ipAddr & mask) == (netAddr & mask);
     }
 
     static class LoginToken implements Serializable {
@@ -435,9 +484,9 @@ public class TelecomGatewayApplication {
 
         private String client;
 
-        private int inPort;
+        private Integer inPort;
 
-        private int exPort;
+        private Integer exPort;
 
         public PortMappingProtocol getProtocol() {
             return protocol;
@@ -455,19 +504,19 @@ public class TelecomGatewayApplication {
             this.client = client;
         }
 
-        public int getInPort() {
+        public Integer getInPort() {
             return inPort;
         }
 
-        public void setInPort(int inPort) {
+        public void setInPort(Integer inPort) {
             this.inPort = inPort;
         }
 
-        public int getExPort() {
+        public Integer getExPort() {
             return exPort;
         }
 
-        public void setExPort(int exPort) {
+        public void setExPort(Integer exPort) {
             this.exPort = exPort;
         }
     }
@@ -504,11 +553,7 @@ public class TelecomGatewayApplication {
         }
     }
 
-    static class PortMappingSetResponse implements Serializable {
-
-        private PortMappingSetOption op;
-
-        private String srvname;
+    static class PortMappingSetResponse extends PortMappingSet {
 
         private int retVal;
 
@@ -518,22 +563,6 @@ public class TelecomGatewayApplication {
 
         public void setRetVal(int retVal) {
             this.retVal = retVal;
-        }
-
-        public PortMappingSetOption getOp() {
-            return op;
-        }
-
-        public void setOp(PortMappingSetOption op) {
-            this.op = op;
-        }
-
-        public String getSrvname() {
-            return srvname;
-        }
-
-        public void setSrvname(String srvname) {
-            this.srvname = srvname;
         }
     }
 
