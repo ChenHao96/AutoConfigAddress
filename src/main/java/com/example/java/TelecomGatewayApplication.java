@@ -261,7 +261,7 @@ public class TelecomGatewayApplication {
                 | (Integer.parseInt(ips[2]) << 8) | (Integer.parseInt(ips[3]));
     }
 
-    private static boolean checkIpInRange(String ip, String cidr) {
+    public static boolean checkIpInRange(String ip, String cidr) {
 
         String[] lanMask = cidr.split("/");
         String lan = lanMask[0], maskStr = lanMask[1];
