@@ -16,9 +16,7 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.message.BasicNameValuePair;
 
 import java.io.*;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,16 +27,40 @@ public class TelecomGatewayApplication {
         System.out.println("------\t正在登录网关");
         telecomGatewayApplication.loginGateway();
         System.out.print("\u001B[33m------\t正在获取您的网关IP");
-        System.out.println("\u001B[0m\u001B[31m(暂时仅支持电信)\u001B[0m");
+        System.out.println("\u001B[0m\u001B[31m(暂时仅支持天翼网关 >=3.0)\u001B[0m");
         System.out.println(new Gson().toJson(telecomGatewayApplication.getGatewayInfo()));
-        System.out.println(new Gson().toJson(telecomGatewayApplication.getPortMappingDisplay()));
+        PortMappingDisplay display = telecomGatewayApplication.getPortMappingDisplay();
+        System.out.println(new Gson().toJson(display));
+        PortMappingSet portMappingSet = new PortMappingSet();
+        portMappingSet.setSrvname("test");
+        portMappingSet.setOp(null);
+        if (display.getPmRule() != null && display.getPmRule().size() > 0) {
+            for (PortMappingRule rule : display.getPmRule()) {
+                if (rule.getDesp().equals(portMappingSet.getSrvname())) {
+                    portMappingSet.setOp(PortMappingSetOption.del);
+                    break;
+                }
+            }
+        } else {
+            portMappingSet.setOp(PortMappingSetOption.add);
+            portMappingSet.setClient("192.168.3.355");
+            portMappingSet.setExPort(8080);
+            portMappingSet.setInPort(8080);
+        }
+        if (portMappingSet.getOp() != null) {
+            System.out.println(new Gson().toJson(telecomGatewayApplication.portMappingSetSingle(portMappingSet)));
+        }
     }
 
     private final Properties properties;
 
+    private final Set<String> serviceNames = new LinkedHashSet<>();
+
     private String gatewayUrl;
 
     private String loginToken;
+
+    private String lanIpPrefix;
 
     private CloseableHttpClient httpclient;
 
@@ -78,15 +100,15 @@ public class TelecomGatewayApplication {
 
         String address = this.properties.getProperty("wlan.nat.ip");
         if (StringUtils.isBlank(address)) {
-            throw new IllegalArgumentException("wlan.nat.ip is blank!");
+            throw new IllegalArgumentException("Gateway Address Is Blank!");
         }
         String username = this.properties.getProperty("wlan.nat.username");
         if (StringUtils.isBlank(username)) {
-            throw new IllegalArgumentException("wlan.nat.username is blank!");
+            throw new IllegalArgumentException("Gateway Username Is Blank!");
         }
         String password = this.properties.getProperty("wlan.nat.password");
         if (StringUtils.isBlank(password)) {
-            throw new IllegalArgumentException("wlan.nat.password is blank!");
+            throw new IllegalArgumentException("Gateway Password Is Blank!");
         }
 
         this.gatewayUrl = "http://" + address + "/cgi-bin/luci";
@@ -115,53 +137,19 @@ public class TelecomGatewayApplication {
         }
     }
 
-    public PortMappingDisplay getPortMappingDisplay() throws IOException {
-
-        if (StringUtils.isBlank(this.gatewayUrl)) {
-            throw new IllegalArgumentException("gateway must be login!");
-        }
-        if (StringUtils.isBlank(this.loginToken)) {
-            throw new IllegalArgumentException("gateway must be login!");
-        }
-
-        final String url = this.gatewayUrl + "/admin/settings/pmDisplay";
-        try (CloseableHttpResponse response = httpclient.execute(new HttpGet(url))) {
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(
-                            response.getEntity().getContent()));
-
-            JsonElement jsonElement = JsonParser.parseReader(reader);
-            EntityUtils.consume(response.getEntity());
-            JsonObject jsonObject = jsonElement.getAsJsonObject();
-            String lanIp = jsonObject.getAsJsonPrimitive("lanIp").getAsString();
-            String mask = jsonObject.getAsJsonPrimitive("mask").getAsString();
-            int count = jsonObject.getAsJsonPrimitive("count").getAsInt();
-            PortMappingDisplay result = new PortMappingDisplay();
-            result.setLanIp(lanIp);
-            result.setMask(mask);
-            if (count > 0 && result.getPmRule() == null) {
-                Gson gson = new Gson();
-                result.setPmRule(new ArrayList<>());
-                for (int i = 0; i < count; i++) {
-                    result.getPmRule().add(gson.fromJson(jsonObject.get(
-                            "pmRule" + (i + 1)), PortMappingRule.class));
-                }
-            }
-            return result;
-        }
-    }
-
     public GatewayInfo getGatewayInfo() throws IOException {
 
         if (StringUtils.isBlank(this.gatewayUrl)) {
-            throw new IllegalArgumentException("gateway must be login!");
+            throw new IllegalArgumentException("Gateway Must Be Login First!");
+        }
+        if (StringUtils.isBlank(this.loginToken)) {
+            throw new IllegalArgumentException("Gateway Login Fail!");
         }
 
         final String url = this.gatewayUrl + "/admin/settings/gwinfo?get=part";
         try (CloseableHttpResponse response = httpclient.execute(new HttpGet(url))) {
             BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(
-                            response.getEntity().getContent()));
+                    new InputStreamReader(response.getEntity().getContent()));
             GatewayInfo result = new Gson().fromJson(reader, GatewayInfo.class);
             EntityUtils.consume(response.getEntity());
             int index = result.getWANIPv6().indexOf("/");
@@ -180,6 +168,114 @@ public class TelecomGatewayApplication {
         }
     }
 
+    public PortMappingDisplay getPortMappingDisplay() throws IOException {
+
+        if (StringUtils.isBlank(this.gatewayUrl)) {
+            throw new IllegalArgumentException("Gateway Must Be Login First!");
+        }
+        if (StringUtils.isBlank(this.loginToken)) {
+            throw new IllegalArgumentException("Gateway Login Fail!");
+        }
+
+        final String url = this.gatewayUrl + "/admin/settings/pmDisplay";
+        try (CloseableHttpResponse response = httpclient.execute(new HttpGet(url))) {
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(response.getEntity().getContent()));
+            JsonElement jsonElement = JsonParser.parseReader(reader);
+            EntityUtils.consume(response.getEntity());
+            JsonObject jsonObject = jsonElement.getAsJsonObject();
+            String lanIp = jsonObject.getAsJsonPrimitive("lanIp").getAsString();
+            this.lanIpPrefix = lanIp.substring(0, lanIp.lastIndexOf('.'));
+            String mask = jsonObject.getAsJsonPrimitive("mask").getAsString();
+            int count = jsonObject.getAsJsonPrimitive("count").getAsInt();
+            PortMappingDisplay result = new PortMappingDisplay();
+            result.setLanIp(lanIp);
+            result.setCount(count);
+            result.setMask(mask);
+            if (count > 0) {
+                if (result.getPmRule() == null) {
+                    Gson gson = new Gson();
+                    result.setPmRule(new ArrayList<>(count));
+                    for (int i = 0; i < count; i++) {
+                        PortMappingRule rule = gson.fromJson(jsonObject.get(
+                                "pmRule" + (i + 1)), PortMappingRule.class);
+                        result.getPmRule().add(rule);
+                        this.serviceNames.add(rule.getDesp());
+                    }
+                }
+            } else {
+                result.setPmRule(Collections.emptyList());
+            }
+            return result;
+        }
+    }
+
+    public PortMappingSetResponse portMappingSetSingle(PortMappingSet portMappingSet) throws IOException {
+
+        if (StringUtils.isBlank(this.gatewayUrl)) {
+            throw new IllegalArgumentException("Gateway Must Be Login First!");
+        }
+        if (StringUtils.isBlank(this.loginToken)) {
+            throw new IllegalArgumentException("Gateway Login Fail!");
+        }
+        if (StringUtils.isBlank(this.lanIpPrefix)) {
+            throw new IllegalArgumentException("Must Be Request PortMappingDisplay First!");
+        }
+        if (StringUtils.isBlank(portMappingSet.getSrvname())) {
+            throw new IllegalArgumentException("Virtual Service Name Cannot Be Empty!");
+        }
+        if (portMappingSet.getOp() == null) {
+            throw new IllegalArgumentException("PortMapping Option Is Null!");
+        }
+
+        List<NameValuePair> nameValuePairs = new ArrayList<>();
+        nameValuePairs.add(new BasicNameValuePair("token", this.loginToken));
+        nameValuePairs.add(new BasicNameValuePair("op", portMappingSet.getOp().name()));
+        nameValuePairs.add(new BasicNameValuePair("srvname", portMappingSet.getSrvname()));
+        if (PortMappingSetOption.add.equals(portMappingSet.getOp())) {
+
+            if (this.serviceNames.contains(portMappingSet.getSrvname())) {
+                throw new IllegalArgumentException("Service Name Already Exists!");
+            }
+            if (StringUtils.isBlank(portMappingSet.getClient())) {
+                throw new IllegalArgumentException("Client Param Is Blank!");
+            } else if (!portMappingSet.getClient().startsWith(this.lanIpPrefix)) {
+                throw new IllegalArgumentException("The LAN IP is not the same network segment as the current LAN!");
+            } else if (!portMappingSet.getClient().matches("((1\\d{2}|2([0-4]\\d|5[0-5])|[1-9]\\d|[1-9])\\.){3}(1\\d{2}|2([0-4]\\d|5[0-5])|[1-9]\\d|[1-9])")) {
+                throw new IllegalArgumentException("Invalid LAN IP!");
+            }
+            if (portMappingSet.getExPort() < 0 || portMappingSet.getExPort() > 65535) {
+                throw new IllegalArgumentException("Invalid External Port Value!");
+            }
+            if (portMappingSet.getInPort() < 0 || portMappingSet.getInPort() > 65535) {
+                throw new IllegalArgumentException("Invalid Internal Port Value!");
+            }
+            if (portMappingSet.getProtocol() == null) {
+                throw new IllegalArgumentException("PortMapping Protocol Is Null!");
+            }
+
+            nameValuePairs.add(new BasicNameValuePair("client", portMappingSet.getClient()));
+            nameValuePairs.add(new BasicNameValuePair("exPort", portMappingSet.getExPort() + ""));
+            nameValuePairs.add(new BasicNameValuePair("inPort", portMappingSet.getInPort() + ""));
+            nameValuePairs.add(new BasicNameValuePair("protocol", portMappingSet.getProtocol().name()));
+        }
+
+        HttpPost httpPost = new HttpPost(this.gatewayUrl + "/admin/settings/pmSetSingle");
+        httpPost.setEntity(new UrlEncodedFormEntity(nameValuePairs));
+        try (CloseableHttpResponse httpResponse = httpclient.execute(httpPost)) {
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(httpResponse.getEntity().getContent()));
+            PortMappingSetResponse response = new Gson().fromJson(reader, PortMappingSetResponse.class);
+            EntityUtils.consume(httpResponse.getEntity());
+            response.setSrvname(portMappingSet.getSrvname());
+            response.setOp(portMappingSet.getOp());
+            if (PortMappingSetOption.del.equals(response.getOp())) {
+                this.serviceNames.remove(response.getSrvname());
+            }
+            return response;
+        }
+    }
+
     static class LoginToken implements Serializable {
 
         private String token;
@@ -190,128 +286,6 @@ public class TelecomGatewayApplication {
 
         public void setToken(String token) {
             this.token = token;
-        }
-    }
-
-    static class PortMappingDisplay implements Serializable {
-
-        private String lanIp;
-
-        private String mask;
-
-        private List<PortMappingRule> pmRule;
-
-        public String getLanIp() {
-            return lanIp;
-        }
-
-        public void setLanIp(String lanIp) {
-            this.lanIp = lanIp;
-        }
-
-        public String getMask() {
-            return mask;
-        }
-
-        public void setMask(String mask) {
-            this.mask = mask;
-        }
-
-        public List<PortMappingRule> getPmRule() {
-            return pmRule;
-        }
-
-        public void setPmRule(List<PortMappingRule> pmRule) {
-            this.pmRule = pmRule;
-        }
-    }
-
-    static abstract class PortMapping implements Serializable {
-
-        private String protocol;
-
-        private String client;
-
-        private int inPort;
-
-        private int exPort;
-
-        public String getProtocol() {
-            return protocol;
-        }
-
-        public void setProtocol(String protocol) {
-            this.protocol = protocol;
-        }
-
-        public String getClient() {
-            return client;
-        }
-
-        public void setClient(String client) {
-            this.client = client;
-        }
-
-        public int getInPort() {
-            return inPort;
-        }
-
-        public void setInPort(int inPort) {
-            this.inPort = inPort;
-        }
-
-        public int getExPort() {
-            return exPort;
-        }
-
-        public void setExPort(int exPort) {
-            this.exPort = exPort;
-        }
-    }
-
-    static class PortMappingSet extends PortMapping {
-
-        private String op;
-
-        private String srvname;
-
-        public String getOp() {
-            return op;
-        }
-
-        public void setOp(String op) {
-            this.op = op;
-        }
-
-        public String getSrvname() {
-            return srvname;
-        }
-
-        public void setSrvname(String srvname) {
-            this.srvname = srvname;
-        }
-    }
-
-    static class PortMappingRule extends PortMapping {
-
-        private String desp;
-
-        private int enable;
-
-        public String getDesp() {
-            return desp;
-        }
-
-        public void setDesp(String desp) {
-            this.desp = desp;
-        }
-
-        public int getEnable() {
-            return enable;
-        }
-
-        public void setEnable(int enable) {
-            this.enable = enable;
         }
     }
 
@@ -405,6 +379,184 @@ public class TelecomGatewayApplication {
 
         public void setSWVer(String SWVer) {
             this.SWVer = SWVer;
+        }
+    }
+
+    static class PortMappingDisplay implements Serializable {
+
+        private String lanIp;
+
+        private String mask;
+
+        private int count;
+
+        private List<PortMappingRule> pmRule;
+
+        public String getLanIp() {
+            return lanIp;
+        }
+
+        public void setLanIp(String lanIp) {
+            this.lanIp = lanIp;
+        }
+
+        public String getMask() {
+            return mask;
+        }
+
+        public void setMask(String mask) {
+            this.mask = mask;
+        }
+
+        public List<PortMappingRule> getPmRule() {
+            return pmRule;
+        }
+
+        public void setPmRule(List<PortMappingRule> pmRule) {
+            this.pmRule = pmRule;
+        }
+
+        public int getCount() {
+            return count;
+        }
+
+        public void setCount(int count) {
+            this.count = count;
+        }
+    }
+
+    enum PortMappingProtocol {
+        TCP, UDP, BOTH
+    }
+
+    static abstract class PortMapping implements Serializable {
+
+        private PortMappingProtocol protocol;
+
+        private String client;
+
+        private int inPort;
+
+        private int exPort;
+
+        public PortMappingProtocol getProtocol() {
+            return protocol;
+        }
+
+        public void setProtocol(PortMappingProtocol protocol) {
+            this.protocol = protocol;
+        }
+
+        public String getClient() {
+            return client;
+        }
+
+        public void setClient(String client) {
+            this.client = client;
+        }
+
+        public int getInPort() {
+            return inPort;
+        }
+
+        public void setInPort(int inPort) {
+            this.inPort = inPort;
+        }
+
+        public int getExPort() {
+            return exPort;
+        }
+
+        public void setExPort(int exPort) {
+            this.exPort = exPort;
+        }
+    }
+
+    enum PortMappingSetOption {
+        add, del, enable, disable;
+    }
+
+    static class PortMappingSet extends PortMapping {
+
+        private PortMappingSetOption op;
+
+        private String srvname;
+
+        public PortMappingSet() {
+            super.setProtocol(PortMappingProtocol.TCP);
+            this.op = PortMappingSetOption.add;
+        }
+
+        public PortMappingSetOption getOp() {
+            return op;
+        }
+
+        public void setOp(PortMappingSetOption op) {
+            this.op = op;
+        }
+
+        public String getSrvname() {
+            return srvname;
+        }
+
+        public void setSrvname(String srvname) {
+            this.srvname = srvname;
+        }
+    }
+
+    static class PortMappingSetResponse implements Serializable {
+
+        private PortMappingSetOption op;
+
+        private String srvname;
+
+        private int retVal;
+
+        public int getRetVal() {
+            return retVal;
+        }
+
+        public void setRetVal(int retVal) {
+            this.retVal = retVal;
+        }
+
+        public PortMappingSetOption getOp() {
+            return op;
+        }
+
+        public void setOp(PortMappingSetOption op) {
+            this.op = op;
+        }
+
+        public String getSrvname() {
+            return srvname;
+        }
+
+        public void setSrvname(String srvname) {
+            this.srvname = srvname;
+        }
+    }
+
+    static class PortMappingRule extends PortMapping {
+
+        private String desp;
+
+        private int enable;
+
+        public String getDesp() {
+            return desp;
+        }
+
+        public void setDesp(String desp) {
+            this.desp = desp;
+        }
+
+        public int getEnable() {
+            return enable;
+        }
+
+        public void setEnable(int enable) {
+            this.enable = enable;
         }
     }
 }
