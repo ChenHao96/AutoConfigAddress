@@ -39,7 +39,7 @@ public class TelecomGatewayApplication {
     public TelecomGatewayApplication() throws IOException {
 
         this.properties = new Properties();
-        InputStream inputStream = AliyunDNSApplication.class
+        InputStream inputStream = TelecomGatewayApplication.class
                 .getResourceAsStream("/application.properties");
         if (inputStream != null) {
             this.properties.load(inputStream);
